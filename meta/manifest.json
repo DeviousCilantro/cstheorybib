@@ -1,0 +1,58 @@
+{
+  "counts": {
+    "combinatorica": 1899,
+    "ecc": 4708,
+    "ipl": 7997,
+    "jacm": 3215,
+    "jsl": 5093,
+    "tcs": 10000
+  },
+  "generated_at": "2026-05-02T21:57:46Z",
+  "json_only": true,
+  "page_size": 1000,
+  "source": "dblp-json-api-rust",
+  "venues": [
+    {
+      "id": "jsl",
+      "journal": "Journal of Symbolic Logic",
+      "label": "JSL",
+      "out": "jsl.bib",
+      "stream": "journals/jsyml"
+    },
+    {
+      "id": "tcs",
+      "journal": "Theoretical Computer Science",
+      "label": "TCS",
+      "out": "tcs.bib",
+      "stream": "journals/tcs"
+    },
+    {
+      "id": "combinatorica",
+      "journal": "Combinatorica",
+      "label": "COMB",
+      "out": "combinatorica.bib",
+      "stream": "journals/combinatorica"
+    },
+    {
+      "id": "ipl",
+      "journal": "Information Processing Letters",
+      "label": "IPL",
+      "out": "ipl.bib",
+      "stream": "journals/ipl"
+    },
+    {
+      "id": "jacm",
+      "journal": "Journal of the {ACM}",
+      "label": "JACM",
+      "out": "jacm.bib",
+      "stream": "journals/jacm"
+    },
+    {
+      "id": "ecc",
+      "journal": "Electronic Colloquium on Computational Complexity",
+      "label": "ECC",
+      "out": "ecc.bib",
+      "stream": "journals/eccc"
+    }
+  ]
+}
