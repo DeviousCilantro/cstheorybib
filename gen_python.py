@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import errno
-import hashlib
 import html
 import json
 import os
@@ -21,7 +20,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence
 
 try:
     import fcntl  # Unix-only; cron/server use-case is Unix-like.
@@ -104,10 +103,10 @@ class Venue:
 @dataclass
 class BibEntry:
     venue: Venue
-    dblp_key: str                 # e.g. journals/tcs/FooB24, without DBLP:
-    original_bib_key: str         # e.g. DBLP:journals/tcs/FooB24
-    entry_type: str               # article, inproceedings, ...
-    raw_bib: str                  # official DBLP BibTeX entry
+    dblp_key: str  # e.g. journals/tcs/FooB24, without DBLP:
+    original_bib_key: str  # e.g. DBLP:journals/tcs/FooB24
+    entry_type: str  # article, inproceedings, ...
+    raw_bib: str  # official DBLP BibTeX entry
     fields: Dict[str, str]
     authors: List[str] = field(default_factory=list)
     year: str = ""
@@ -131,7 +130,10 @@ class LockFile:
                 if exc.errno in (errno.EACCES, errno.EAGAIN):
                     raise SystemExit(f"another generator instance holds {self.path}")
                 raise
-        os.write(self.fd, f"pid={os.getpid()} started={_dt.datetime.now().isoformat()}\n".encode())
+        os.write(
+            self.fd,
+            f"pid={os.getpid()} started={_dt.datetime.now().isoformat()}\n".encode(),
+        )
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -159,7 +161,9 @@ class Fetcher:
         self.timeout = timeout
         self.last_request = 0.0
         contact_part = contact.strip() or "contact=unset"
-        self.user_agent = f"theorybib-generator/0.2 ({contact_part}; polite DBLP API client)"
+        self.user_agent = (
+            f"theorybib-generator/0.2 ({contact_part}; polite DBLP API client)"
+        )
 
     def get(self, url: str, params: Mapping[str, str]) -> str:
         query = urllib.parse.urlencode(params)
@@ -192,7 +196,7 @@ class Fetcher:
                     time.sleep(delay)
                     continue
                 if status in (408, 500, 502, 503, 504) and attempt < self.max_retries:
-                    delay = min(300.0, 10.0 * (2 ** attempt))
+                    delay = min(300.0, 10.0 * (2**attempt))
                     print(
                         f"HTTP {status}; retrying after {delay:.0f}s. "
                         f"sample={one_line(body, 120)!r}",
@@ -200,11 +204,13 @@ class Fetcher:
                     )
                     time.sleep(delay)
                     continue
-                raise RuntimeError(f"HTTP {status} for {full_url}: {one_line(body, 500)}") from exc
+                raise RuntimeError(
+                    f"HTTP {status} for {full_url}: {one_line(body, 500)}"
+                ) from exc
             except urllib.error.URLError as exc:
                 last_error = exc
                 if attempt < self.max_retries:
-                    delay = min(300.0, 20.0 * (2 ** attempt))
+                    delay = min(300.0, 20.0 * (2**attempt))
                     print(
                         f"network error {exc}; retrying after {delay:.0f}s "
                         f"({attempt + 1}/{self.max_retries}).",
@@ -226,7 +232,9 @@ class Fetcher:
         return None
 
     def _throttle(self) -> None:
-        target = self.delay + (random.random() * self.jitter if self.jitter > 0 else 0.0)
+        target = self.delay + (
+            random.random() * self.jitter if self.jitter > 0 else 0.0
+        )
         elapsed = time.monotonic() - self.last_request
         if elapsed < target:
             time.sleep(target - elapsed)
@@ -274,7 +282,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     venues = load_venues(root / args.config)
     if args.only:
         selected = {x.lower() for x in args.only}
-        venues = [v for v in venues if v.id.lower() in selected or v.label.lower() in selected]
+        venues = [
+            v for v in venues if v.id.lower() in selected or v.label.lower() in selected
+        ]
         if not venues:
             raise SystemExit(f"--only selected no venues: {sorted(selected)}")
 
@@ -309,7 +319,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         assign_custom_keys(all_entries, existing_keymap)
 
         if args.dry_run:
-            print(f"dry run: fetched {len(all_entries)} entries across {len(venues)} venues")
+            print(
+                f"dry run: fetched {len(all_entries)} entries across {len(venues)} venues"
+            )
             return 0
 
         write_outputs(
@@ -331,36 +343,92 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Generate CryptoBib-style BibTeX files for theory venues from DBLP."
     )
-    p.add_argument("--root", default=".", help="repository root; default: current directory")
+    p.add_argument(
+        "--root", default=".", help="repository root; default: current directory"
+    )
     p.add_argument("--bib-dir", default="bib", help="output directory relative to root")
-    p.add_argument("--meta-dir", default="meta", help="metadata directory relative to root")
-    p.add_argument("--cache-dir", default=".cache/dblp", help="cache directory relative to root")
-    p.add_argument("--config", default="venues.json", help="venue config JSON relative to root")
-    p.add_argument("--write-default-config", action="store_true", help="write default venues.json and exit")
-    p.add_argument("--only", action="append", default=[], help="only generate this venue id/label; repeatable")
-    p.add_argument("--contact", default=os.environ.get("THEORYBIB_CONTACT", ""), help="contact string for User-Agent")
-    p.add_argument("--delay", type=float, default=8.0, help="minimum seconds between DBLP requests")
-    p.add_argument("--jitter", type=float, default=2.0, help="extra random seconds added to each delay")
-    p.add_argument("--cooldown", type=float, default=300.0, help="seconds to wait after a 429 without Retry-After")
-    p.add_argument("--timeout", type=float, default=120.0, help="HTTP timeout in seconds")
-    p.add_argument("--max-retries", type=int, default=12, help="maximum retries per HTTP request")
-    p.add_argument("--page-size", type=int, default=1000, help="DBLP h parameter; capped at 1000")
-    p.add_argument("--bib-format", default="bib1", choices=["bib0", "bib1", "bib2"], help="DBLP BibTeX format")
+    p.add_argument(
+        "--meta-dir", default="meta", help="metadata directory relative to root"
+    )
+    p.add_argument(
+        "--cache-dir", default=".cache/dblp", help="cache directory relative to root"
+    )
+    p.add_argument(
+        "--config", default="venues.json", help="venue config JSON relative to root"
+    )
+    p.add_argument(
+        "--write-default-config",
+        action="store_true",
+        help="write default venues.json and exit",
+    )
+    p.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        help="only generate this venue id/label; repeatable",
+    )
+    p.add_argument(
+        "--contact",
+        default=os.environ.get("THEORYBIB_CONTACT", ""),
+        help="contact string for User-Agent",
+    )
+    p.add_argument(
+        "--delay", type=float, default=8.0, help="minimum seconds between DBLP requests"
+    )
+    p.add_argument(
+        "--jitter",
+        type=float,
+        default=2.0,
+        help="extra random seconds added to each delay",
+    )
+    p.add_argument(
+        "--cooldown",
+        type=float,
+        default=300.0,
+        help="seconds to wait after a 429 without Retry-After",
+    )
+    p.add_argument(
+        "--timeout", type=float, default=120.0, help="HTTP timeout in seconds"
+    )
+    p.add_argument(
+        "--max-retries", type=int, default=12, help="maximum retries per HTTP request"
+    )
+    p.add_argument(
+        "--page-size", type=int, default=1000, help="DBLP h parameter; capped at 1000"
+    )
+    p.add_argument(
+        "--bib-format",
+        default="bib1",
+        choices=["bib0", "bib1", "bib2"],
+        help="DBLP BibTeX format",
+    )
     p.add_argument(
         "--cache-policy",
         default="refresh",
         choices=["refresh", "reuse", "offline"],
         help="refresh=fetch network and overwrite cache; reuse=use existing cache if present; offline=cache only",
     )
-    p.add_argument("--individual-fallback", action="store_true", help="fall back to /rec/<key>.bib if a bulk page fails validation")
+    p.add_argument(
+        "--individual-fallback",
+        action="store_true",
+        help="fall back to /rec/<key>.bib if a bulk page fails validation",
+    )
     p.add_argument(
         "--json-only",
         action="store_true",
         help="do not fetch DBLP BibTeX; synthesize BibTeX from DBLP JSON metadata. Fewer requests, less DBLP-exact formatting.",
     )
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--git-commit", action="store_true", help="commit changed bib/meta files after generation")
-    p.add_argument("--git-push", action="store_true", help="commit and push changed bib/meta files after generation")
+    p.add_argument(
+        "--git-commit",
+        action="store_true",
+        help="commit changed bib/meta files after generation",
+    )
+    p.add_argument(
+        "--git-push",
+        action="store_true",
+        help="commit and push changed bib/meta files after generation",
+    )
     return p.parse_args(argv)
 
 
@@ -445,7 +513,10 @@ def fetch_venue(
         first = page["first"]
         keys = page["keys"]
         infos = page["infos"]
-        print(f"[{venue.id}] page first={first} sent={sent} progress={first + sent}/{page['total']}", file=sys.stderr)
+        print(
+            f"[{venue.id}] page first={first} sent={sent} progress={first + sent}/{page['total']}",
+            file=sys.stderr,
+        )
 
         if sent == 0 or not keys:
             break
@@ -473,25 +544,42 @@ def fetch_venue(
                 page_entries = parse_official_bib_page(venue, bib_text)
                 validate_page_keys(keys, page_entries)
             except Exception as exc:
-                print(f"bulk BibTeX page failed for {venue.id}@{first}: {exc}", file=sys.stderr)
+                print(
+                    f"bulk BibTeX page failed for {venue.id}@{first}: {exc}",
+                    file=sys.stderr,
+                )
                 if not individual_fallback:
-                    print("using DBLP JSON metadata for this page instead", file=sys.stderr)
+                    print(
+                        "using DBLP JSON metadata for this page instead",
+                        file=sys.stderr,
+                    )
                     page_entries = [entry_from_json_info(venue, info) for info in infos]
                 else:
-                    print("falling back to individual /rec/<key>.bib requests", file=sys.stderr)
+                    print(
+                        "falling back to individual /rec/<key>.bib requests",
+                        file=sys.stderr,
+                    )
                     page_entries = []
                     for idx, key in enumerate(keys, 1):
                         text = fetcher.get(f"{DBLP_REC}/{key}.bib", {})
                         parsed = parse_official_bib_page(venue, text)
                         if len(parsed) != 1:
-                            raise RuntimeError(f"expected one BibTeX entry for {key}, got {len(parsed)}")
+                            raise RuntimeError(
+                                f"expected one BibTeX entry for {key}, got {len(parsed)}"
+                            )
                         page_entries.append(parsed[0])
                         if idx % 100 == 0:
-                            print(f"  individual fallback {idx}/{len(keys)}", file=sys.stderr)
+                            print(
+                                f"  individual fallback {idx}/{len(keys)}",
+                                file=sys.stderr,
+                            )
 
         for entry in page_entries:
             if entry.dblp_key in seen:
-                print(f"warning: duplicate DBLP key in {venue.id}: {entry.dblp_key}", file=sys.stderr)
+                print(
+                    f"warning: duplicate DBLP key in {venue.id}: {entry.dblp_key}",
+                    file=sys.stderr,
+                )
                 continue
             seen.add(entry.dblp_key)
             derive_key_material(entry)
@@ -502,7 +590,10 @@ def fetch_venue(
             break
 
     if total is not None and len(entries) != total:
-        print(f"warning: collected {len(entries)} entries but DBLP reported {total} for {venue.id}", file=sys.stderr)
+        print(
+            f"warning: collected {len(entries)} entries but DBLP reported {total} for {venue.id}",
+            file=sys.stderr,
+        )
 
     print(f"collected {len(entries)} entries for {venue.id}", file=sys.stderr)
     return entries
@@ -552,13 +643,17 @@ def parse_official_bib_page(venue: Venue, bib_text: str) -> List[BibEntry]:
     return entries
 
 
-def validate_page_keys(expected_keys: Sequence[str], entries: Sequence[BibEntry]) -> None:
+def validate_page_keys(
+    expected_keys: Sequence[str], entries: Sequence[BibEntry]
+) -> None:
     expected = set(expected_keys)
     actual = {e.dblp_key for e in entries}
     if expected != actual:
         missing = sorted(expected - actual)[:10]
         extra = sorted(actual - expected)[:10]
-        raise RuntimeError(f"BibTeX page key mismatch; missing={missing}, extra={extra}")
+        raise RuntimeError(
+            f"BibTeX page key mismatch; missing={missing}, extra={extra}"
+        )
 
 
 def entry_from_json_info(venue: Venue, info: Mapping[str, object]) -> BibEntry:
@@ -570,7 +665,13 @@ def entry_from_json_info(venue: Venue, info: Mapping[str, object]) -> BibEntry:
     if info.get("title"):
         fields["title"] = str(info["title"]).rstrip(".")
     fields["journal"] = venue.journal
-    for src, dst in [("volume", "volume"), ("number", "number"), ("pages", "pages"), ("year", "year"), ("doi", "doi")]:
+    for src, dst in [
+        ("volume", "volume"),
+        ("number", "number"),
+        ("pages", "pages"),
+        ("year", "year"),
+        ("doi", "doi"),
+    ]:
         if info.get(src):
             fields[dst] = str(info[src])
     ee = info.get("ee")
@@ -768,7 +869,9 @@ def split_authors(author_field: str) -> List[str]:
 
 
 def author_label(authors: Sequence[str]) -> str:
-    surnames = [sanitize_name(last_name(a)) for a in authors if a and a.lower() != "others"]
+    surnames = [
+        sanitize_name(last_name(a)) for a in authors if a and a.lower() != "others"
+    ]
     surnames = [s for s in surnames if s]
     if not surnames:
         return "Anon"
@@ -874,8 +977,10 @@ def assign_custom_keys(entries: Sequence[BibEntry], old: Mapping[str, str]) -> N
 
     for base in sorted(groups):
         group = sorted(groups[base], key=lambda e: (e.year, e.author_label, e.dblp_key))
-        clean_collision = len(group) > 1 and base not in used and not any(
-            k.startswith(base) for k in used
+        clean_collision = (
+            len(group) > 1
+            and base not in used
+            and not any(k.startswith(base) for k in used)
         )
         for idx, entry in enumerate(group):
             if len(group) == 1 and base not in used:
@@ -953,15 +1058,26 @@ def write_outputs(
 
         for venue in venues:
             out_path = tmp_bib / venue.out
-            venue_entries = sorted(by_venue.get(venue.id, []), key=lambda e: e.custom_key)
-            out_path.write_text(bib_file_text(venue, venue_entries, now), encoding="utf-8")
-            print(f"wrote {len(venue_entries)} entries -> {bib_dir / venue.out}", file=sys.stderr)
+            venue_entries = sorted(
+                by_venue.get(venue.id, []), key=lambda e: e.custom_key
+            )
+            out_path.write_text(
+                bib_file_text(venue, venue_entries, now), encoding="utf-8"
+            )
+            print(
+                f"wrote {len(venue_entries)} entries -> {bib_dir / venue.out}",
+                file=sys.stderr,
+            )
 
         all_entries = sorted(entries, key=lambda e: e.custom_key)
-        (tmp_bib / "all.bib").write_text(bib_file_text(None, all_entries, now), encoding="utf-8")
+        (tmp_bib / "all.bib").write_text(
+            bib_file_text(None, all_entries, now), encoding="utf-8"
+        )
 
         write_keymap(tmp_meta / "keymap.tsv", all_entries)
-        write_manifest(tmp_meta / "manifest.json", venues, all_entries, generator_args, now)
+        write_manifest(
+            tmp_meta / "manifest.json", venues, all_entries, generator_args, now
+        )
 
         # Atomic-ish replacement per file. Preserve unrelated files in bib/ and meta/.
         bib_dir.mkdir(parents=True, exist_ok=True)
@@ -1001,7 +1117,9 @@ def bib_file_text(venue: Optional[Venue], entries: Sequence[BibEntry], now: str)
 
 
 def write_keymap(path: Path, entries: Sequence[BibEntry]) -> None:
-    lines = ["dblp_key\tcustom_key\tvenue\tyear\tauthor_label\tbase_key\toriginal_bib_key"]
+    lines = [
+        "dblp_key\tcustom_key\tvenue\tyear\tauthor_label\tbase_key\toriginal_bib_key"
+    ]
     for e in sorted(entries, key=lambda x: (x.venue.id, x.custom_key, x.dblp_key)):
         lines.append(
             "\t".join(
@@ -1036,7 +1154,9 @@ def write_manifest(
         "counts": counts,
         "venues": [v.__dict__ for v in venues],
     }
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def git_commit_and_maybe_push(root: Path, push: bool) -> None:
@@ -1056,7 +1176,11 @@ def git_commit_and_maybe_push(root: Path, push: bool) -> None:
         return
     subprocess.run(["git", "add", "bib", "meta"], cwd=root, check=True)
     date = _dt.date.today().isoformat()
-    subprocess.run(["git", "commit", "-m", f"Update DBLP bibliography {date}"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", f"Update DBLP bibliography {date}"],
+        cwd=root,
+        check=True,
+    )
     if push:
         subprocess.run(["git", "push"], cwd=root, check=True)
 

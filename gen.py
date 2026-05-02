@@ -13,7 +13,11 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parent
 
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--engine", choices=["auto", "rust", "python"], default=os.environ.get("THEORYBIB_ENGINE", "auto"))
+    parser.add_argument(
+        "--engine",
+        choices=["auto", "rust", "python"],
+        default=os.environ.get("THEORYBIB_ENGINE", "auto"),
+    )
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-h", "--help", action="store_true")
     ns, rest = parser.parse_known_args(argv)
@@ -38,7 +42,9 @@ def run_engine(root: Path, engine: str, args: list[str], *, debug: bool = False)
         return subprocess.call(cmd, cwd=str(root))
 
     if engine == "rust":
-        print("error: --engine rust requested, but cargo is not on PATH", file=sys.stderr)
+        print(
+            "error: --engine rust requested, but cargo is not on PATH", file=sys.stderr
+        )
         return 127
 
     py_args = list(args)

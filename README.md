@@ -1,39 +1,41 @@
-# theorybib
+<!-- @format -->
 
-CryptoBib-style BibTeX files for selected theory venues, generated from DBLP.
+# Bibliography for Theoretical Computer Science and related areas
+
+This repository contains BibTeX files for selected theory venues, generated from DBLP.
 
 This repository uses a hybrid layout:
 
-* `gen.py` is the Python orchestration wrapper. It is the entry point for humans and cron.
-* `rust/theorybib-dblp/` is the Rust engine. It does the DBLP JSON pagination, key generation, cache handling, and output writing.
-* `gen_python.py` is a pure-Python fallback. The wrapper runs it in JSON-only mode if Rust/Cargo is unavailable.
+- `gen.py` is the Python orchestration wrapper. It is the entry point for humans and `cron`.
+- `rust/theorybib-dblp/` is the Rust engine. It does the DBLP JSON pagination, key generation, cache handling, and output writing.
+- `gen_python.py` is a pure-Python fallback. The wrapper runs it in JSON-only mode if Rust/Cargo is unavailable.
 
 The Rust engine is the default because it avoids the fragile paginated bulk-BibTeX export path. Large streams such as TCS can make DBLP's BibTeX export endpoint disagree with the JSON page, whereas the DBLP publication search API explicitly supports JSON pagination via `h` and `f`.
 
 ## Generated files
 
 ```text
-bib/jsl.bib
-bib/tcs.bib
+bib/all.bib
 bib/combinatorica.bib
+bib/ecc.bib
 bib/ipl.bib
 bib/jacm.bib
-bib/ecc.bib
-bib/all.bib
+bib/jsl.bib
+bib/tcs.bib
 meta/keymap.tsv
 meta/manifest.json
 ```
 
 The default venue set is:
 
-| File | Label | DBLP stream | Venue |
-|---|---:|---|---|
-| `bib/jsl.bib` | `JSL` | `journals/jsyml` | Journal of Symbolic Logic |
-| `bib/tcs.bib` | `TCS` | `journals/tcs` | Theoretical Computer Science |
-| `bib/combinatorica.bib` | `COMB` | `journals/combinatorica` | Combinatorica |
-| `bib/ipl.bib` | `IPL` | `journals/ipl` | Information Processing Letters |
-| `bib/jacm.bib` | `JACM` | `journals/jacm` | Journal of the ACM |
-| `bib/ecc.bib` | `ECC` | `journals/eccc` | Electronic Colloquium on Computational Complexity |
+| File                    |  Label | DBLP stream              | Venue                                             |
+| ----------------------- | -----: | ------------------------ | ------------------------------------------------- |
+| `bib/combinatorica.bib` | `COMB` | `journals/combinatorica` | Combinatorica                                     |
+| `bib/ecc.bib`           |  `ECC` | `journals/eccc`          | Electronic Colloquium on Computational Complexity |
+| `bib/ipl.bib`           |  `IPL` | `journals/ipl`           | Information Processing Letters                    |
+| `bib/jacm.bib`          | `JACM` | `journals/jacm`          | Journal of the ACM                                |
+| `bib/jsl.bib`           |  `JSL` | `journals/jsyml`         | Journal of Symbolic Logic                         |
+| `bib/tcs.bib`           |  `TCS` | `journals/tcs`           | Theoretical Computer Science                      |
 
 `ECC` is currently mapped to DBLP's ECCC stream. Edit `venues.json` if you mean another stream.
 
@@ -47,10 +49,10 @@ venue-label ':' author-label two-digit-year [collision-letter]
 
 Author labels are generated as follows.
 
-* One author: full last name. Example: `JSL:Shamir79`.
-* Two or three authors: first three letters of each author's last name. Example: `JSL:AliBob98` or `TCS:AbdMinNam05`.
-* Four or more authors: first letter of each author's last name, up to six authors. Example: `JSL:ABCDEG98`.
-* Collisions: append `a`, `b`, `c`, ... as necessary.
+- One author: full last name. Example: `JSL:Shamir79`.
+- Two or three authors: first three letters of each author's last name. Example: `JSL:AliBob98` or `TCS:AbdMinNam05`.
+- Four or more authors: first letter of each author's last name, up to six authors. Example: `JSL:ABCDEG98`.
+- Collisions: append `a`, `b`, `c`, ... as necessary.
 
 `meta/keymap.tsv` preserves existing citation keys across future updates. This is essential for unattended runs: when DBLP adds a newly colliding record, old citations are not renamed.
 
