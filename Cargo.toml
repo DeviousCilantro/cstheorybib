@@ -1,0 +1,3 @@
+[workspace]
+members = ["rust/theorybib-dblp"]
+resolver = "2"

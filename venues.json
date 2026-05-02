@@ -1,0 +1,44 @@
+[
+  {
+    "id": "jsl",
+    "label": "JSL",
+    "stream": "journals/jsyml",
+    "journal": "Journal of Symbolic Logic",
+    "out": "jsl.bib"
+  },
+  {
+    "id": "tcs",
+    "label": "TCS",
+    "stream": "journals/tcs",
+    "journal": "Theoretical Computer Science",
+    "out": "tcs.bib"
+  },
+  {
+    "id": "combinatorica",
+    "label": "COMB",
+    "stream": "journals/combinatorica",
+    "journal": "Combinatorica",
+    "out": "combinatorica.bib"
+  },
+  {
+    "id": "ipl",
+    "label": "IPL",
+    "stream": "journals/ipl",
+    "journal": "Information Processing Letters",
+    "out": "ipl.bib"
+  },
+  {
+    "id": "jacm",
+    "label": "JACM",
+    "stream": "journals/jacm",
+    "journal": "Journal of the {ACM}",
+    "out": "jacm.bib"
+  },
+  {
+    "id": "ecc",
+    "label": "ECC",
+    "stream": "journals/eccc",
+    "journal": "Electronic Colloquium on Computational Complexity",
+    "out": "ecc.bib"
+  }
+]

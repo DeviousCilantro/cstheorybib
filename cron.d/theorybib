@@ -1,0 +1,3 @@
+# Replace USER and /absolute/path/to/theorybib before installing.
+# Runs at 03:17 on the first day of every fourth month.
+17 3 1 */4 * USER /absolute/path/to/theorybib/scripts/update-and-push.sh >> /absolute/path/to/theorybib/update.log 2>&1
