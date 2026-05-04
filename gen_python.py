@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Python implementation of the theorybib DBLP bibliography generator.
+
+Fetches publication metadata from the DBLP search API, derives
+CryptoBib-style BibTeX keys, and writes per-venue .bib files plus a
+combined all.bib under the bib/ directory.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -14,18 +21,19 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 try:
     import fcntl  # Unix-only; cron/server use-case is Unix-like.
 except ImportError:  # pragma: no cover
-    fcntl = None
+    fcntl: types.ModuleType | None = None  # type: ignore[no-redef]
 
 DBLP_API = "https://dblp.org/search/publ/api"
 DBLP_REC = "https://dblp.org/rec"
@@ -93,6 +101,16 @@ FIELD_ORDER = [
 
 @dataclass(frozen=True)
 class Venue:
+    """Immutable descriptor for a single bibliography venue.
+
+    Attributes:
+        id: Short machine-readable identifier (e.g. ``"jacm"``).
+        label: Short display label used in BibTeX keys (e.g. ``"JACM"``).
+        stream: DBLP stream path (e.g. ``"journals/jacm"``).
+        journal: Full journal name as it appears in BibTeX entries.
+        out: Output .bib filename relative to the bib directory.
+    """
+
     id: str
     label: str
     stream: str
@@ -102,11 +120,27 @@ class Venue:
 
 @dataclass
 class BibEntry:
+    """Mutable record accumulating all data for a single bibliography entry.
+
+    Attributes:
+        venue: The venue this entry belongs to.
+        dblp_key: DBLP key without the ``DBLP:`` prefix.
+        original_bib_key: Raw DBLP key including the ``DBLP:`` prefix.
+        entry_type: BibTeX entry type (e.g. ``"article"``).
+        raw_bib: The complete BibTeX source text for this entry.
+        fields: Parsed field name -> value mapping.
+        authors: List of author name strings split on `` and ``.
+        year: Four-digit year string, empty if unknown.
+        author_label: CryptoBib-style author abbreviation.
+        base_key: ``venue.label:author_labelYY`` before collision resolution.
+        custom_key: Final assigned BibTeX key after collision resolution.
+    """
+
     venue: Venue
-    dblp_key: str  # e.g. journals/tcs/FooB24, without DBLP:
-    original_bib_key: str  # e.g. DBLP:journals/tcs/FooB24
-    entry_type: str  # article, inproceedings, ...
-    raw_bib: str  # official DBLP BibTeX entry
+    dblp_key: str
+    original_bib_key: str
+    entry_type: str
+    raw_bib: str
     fields: Dict[str, str]
     authors: List[str] = field(default_factory=list)
     year: str = ""
@@ -116,11 +150,22 @@ class BibEntry:
 
 
 class LockFile:
-    def __init__(self, path: Path):
-        self.path = path
-        self.fd = None
+    """Process-level advisory lock backed by a file, using ``fcntl`` on Unix.
 
-    def __enter__(self):
+    Acts as a context manager; raises ``SystemExit`` if the lock is already
+    held by another process.
+    """
+
+    def __init__(self, path: Path) -> None:
+        """Initialize with the path where the lock file will be created.
+
+        Args:
+            path: Filesystem path for the lock file.
+        """
+        self.path = path
+        self.fd: Optional[int] = None
+
+    def __enter__(self) -> "LockFile":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o644)
         if fcntl is not None:
@@ -136,7 +181,12 @@ class LockFile:
         )
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        _exc_type: object,
+        _exc: object,
+        _tb: object,
+    ) -> None:
         if self.fd is not None:
             if fcntl is not None:
                 fcntl.flock(self.fd, fcntl.LOCK_UN)
@@ -144,6 +194,8 @@ class LockFile:
 
 
 class Fetcher:
+    """Polite HTTP client with rate-limiting, jitter, and retry logic."""
+
     def __init__(
         self,
         *,
@@ -154,6 +206,16 @@ class Fetcher:
         contact: str,
         timeout: float,
     ) -> None:
+        """Configure the fetcher.
+
+        Args:
+            delay: Minimum seconds to wait between consecutive requests.
+            jitter: Maximum additional random seconds added to each delay.
+            cooldown: Base seconds to wait after an HTTP 429 response.
+            max_retries: Maximum number of retries per request.
+            contact: Contact string embedded in the User-Agent header.
+            timeout: HTTP request timeout in seconds.
+        """
         self.delay = delay
         self.jitter = jitter
         self.cooldown = cooldown
@@ -166,6 +228,18 @@ class Fetcher:
         )
 
     def get(self, url: str, params: Mapping[str, str]) -> str:
+        """Perform a GET request with automatic throttling and retries.
+
+        Args:
+            url: Base URL (without query string).
+            params: Query parameters to append.
+
+        Returns:
+            The decoded response body as a string.
+
+        Raises:
+            RuntimeError: If the request fails after all retries.
+        """
         query = urllib.parse.urlencode(params)
         full_url = url + ("?" + query if query else "")
         req = urllib.request.Request(full_url, headers={"User-Agent": self.user_agent})
@@ -223,6 +297,14 @@ class Fetcher:
         raise RuntimeError(f"request failed after retries: {full_url}: {last_error}")
 
     def _retry_after(self, exc: urllib.error.HTTPError) -> Optional[float]:
+        """Parse the ``Retry-After`` header value from an HTTP 429 response.
+
+        Args:
+            exc: The HTTPError that triggered the rate-limit.
+
+        Returns:
+            The delay in seconds, or None if the header is absent or unparseable.
+        """
         raw = exc.headers.get("Retry-After")
         if not raw:
             return None
@@ -232,6 +314,7 @@ class Fetcher:
         return None
 
     def _throttle(self) -> None:
+        """Sleep as needed to honour the configured inter-request delay."""
         target = self.delay + (
             random.random() * self.jitter if self.jitter > 0 else 0.0
         )
@@ -242,11 +325,36 @@ class Fetcher:
 
 
 class Cache:
-    def __init__(self, root: Path, policy: str):
+    """Simple filesystem cache for DBLP API responses.
+
+    Attributes:
+        root: Base directory under which cached files are stored.
+        policy: One of ``"refresh"``, ``"reuse"``, or ``"offline"``.
+    """
+
+    def __init__(self, root: Path, policy: str) -> None:
+        """Initialize the cache.
+
+        Args:
+            root: Base directory for cached files.
+            policy: Cache policy — ``"refresh"`` always fetches and overwrites,
+                ``"reuse"`` returns existing files when present,
+                ``"offline"`` raises if the file is missing.
+        """
         self.root = root
         self.policy = policy
 
     def path(self, kind: str, venue: Venue, offset: int) -> Path:
+        """Return the cache file path for a given request.
+
+        Args:
+            kind: File extension / sub-directory name (e.g. ``"json"``).
+            venue: The venue being cached.
+            offset: Page offset used as the filename.
+
+        Returns:
+            The absolute cache file path.
+        """
         return self.root / kind / venue.id / f"{offset:07d}.{kind}"
 
     def get_or_fetch(
@@ -255,8 +363,23 @@ class Cache:
         kind: str,
         venue: Venue,
         offset: int,
-        fetch: callable,
+        fetch: Callable[[], str],
     ) -> str:
+        """Return cached content or call *fetch* to obtain and cache it.
+
+        Args:
+            kind: Cache sub-type (``"json"`` or ``"bib"``).
+            venue: Venue whose data is being fetched.
+            offset: Page offset.
+            fetch: Zero-argument callable that performs the actual network
+                request and returns the response text.
+
+        Returns:
+            The cached or freshly fetched response text.
+
+        Raises:
+            RuntimeError: In ``"offline"`` mode when the cache file is absent.
+        """
         path = self.path(kind, venue, offset)
         if self.policy in {"reuse", "offline"} and path.exists():
             return path.read_text(encoding="utf-8")
@@ -269,6 +392,14 @@ class Cache:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the bibliography generator end-to-end.
+
+    Args:
+        argv: Argument list; defaults to ``sys.argv[1:]`` when None.
+
+    Returns:
+        Exit code (0 on success).
+    """
     args = parse_args(argv)
     root = Path(args.root).resolve()
     bib_dir = root / args.bib_dir
@@ -340,6 +471,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
+    """Build the argument parser and parse *argv*.
+
+    Args:
+        argv: Argument list to parse, or None to use ``sys.argv[1:]``.
+
+    Returns:
+        Parsed namespace with all option values.
+    """
     p = argparse.ArgumentParser(
         description="Generate CryptoBib-style BibTeX files for theory venues from DBLP."
     )
@@ -433,6 +572,11 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
 
 
 def write_default_config(path: Path) -> None:
+    """Write the built-in default venue configuration to *path*.
+
+    Args:
+        path: Destination file path; raises ``SystemExit`` if it already exists.
+    """
     if path.exists():
         raise SystemExit(f"refusing to overwrite existing {path}")
     path.write_text(json.dumps(DEFAULT_VENUES, indent=2) + "\n", encoding="utf-8")
@@ -440,6 +584,17 @@ def write_default_config(path: Path) -> None:
 
 
 def load_venues(path: Path) -> List[Venue]:
+    """Load venue definitions from *path*, falling back to the built-in defaults.
+
+    Args:
+        path: Path to a JSON file containing a list of venue objects.
+
+    Returns:
+        Validated list of :class:`Venue` instances.
+
+    Raises:
+        ValueError: If any venue entry is malformed or a duplicate id is found.
+    """
     if path.exists():
         raw = json.loads(path.read_text(encoding="utf-8"))
     else:
@@ -465,6 +620,14 @@ def load_venues(path: Path) -> List[Venue]:
 
 
 def normalize_stream(stream: str) -> str:
+    """Normalize a DBLP stream identifier by stripping whitespace and prefixes.
+
+    Args:
+        stream: Raw stream string from the venue config.
+
+    Returns:
+        Normalized stream path (e.g. ``"journals/jacm"``).
+    """
     stream = stream.strip().rstrip(":")
     if stream.startswith("streams/"):
         stream = stream[len("streams/") :]
@@ -481,6 +644,22 @@ def fetch_venue(
     individual_fallback: bool,
     json_only: bool,
 ) -> List[BibEntry]:
+    """Fetch all entries for *venue* from the DBLP API, paginating as needed.
+
+    Args:
+        venue: The venue to fetch.
+        fetcher: HTTP client to use for all requests.
+        cache: Filesystem cache for raw API responses.
+        page_size: Number of records per page (max 1000).
+        bib_format: DBLP BibTeX format string (``"bib0"``, ``"bib1"``, ``"bib2"``).
+        individual_fallback: When True, fall back to per-record ``/rec/<key>.bib``
+            requests if a bulk page fails validation; otherwise use JSON metadata.
+        json_only: When True, synthesize BibTeX from JSON metadata only,
+            skipping the separate BibTeX fetch.
+
+    Returns:
+        List of :class:`BibEntry` instances for this venue.
+    """
     query = f"streamid:{venue.stream}:"
     entries: List[BibEntry] = []
     seen: set[str] = set()
@@ -505,16 +684,12 @@ def fetch_venue(
                 },
             ),
         )
-        page = parse_json_page(json_text)
+        page_total, sent, first, keys, infos = parse_json_page(json_text)
         if total is None:
-            total = page["total"]
+            total = page_total
             print(f"DBLP reports {total} records", file=sys.stderr)
-        sent = page["sent"]
-        first = page["first"]
-        keys = page["keys"]
-        infos = page["infos"]
         print(
-            f"[{venue.id}] page first={first} sent={sent} progress={first + sent}/{page['total']}",
+            f"[{venue.id}] page first={first} sent={sent} progress={first + sent}/{page_total}",
             file=sys.stderr,
         )
 
@@ -586,7 +761,7 @@ def fetch_venue(
             entries.append(entry)
 
         offset = first + sent
-        if offset >= page["total"]:
+        if offset >= page_total:
             break
 
     if total is not None and len(entries) != total:
@@ -599,7 +774,20 @@ def fetch_venue(
     return entries
 
 
-def parse_json_page(text: str) -> Dict[str, object]:
+def parse_json_page(
+    text: str,
+) -> Tuple[int, int, int, List[str], List[Mapping[str, object]]]:
+    """Parse one page of DBLP JSON search results.
+
+    Args:
+        text: Raw JSON response body from the DBLP search API.
+
+    Returns:
+        A tuple of ``(total, sent, first, keys, infos)`` where *total* is the
+        total number of matching records, *sent* is the number returned on this
+        page, *first* is the zero-based start offset, *keys* is the list of
+        DBLP record keys, and *infos* is the corresponding list of info dicts.
+    """
     data = json.loads(text)
     hits = data.get("result", {}).get("hits", {})
     total = int(hits.get("@total", 0))
@@ -607,23 +795,33 @@ def parse_json_page(text: str) -> Dict[str, object]:
     first = int(hits.get("@first", 0))
     raw_hit = hits.get("hit", [])
     if isinstance(raw_hit, dict):
-        hit_list = [raw_hit]
+        hit_list: List[Mapping[str, object]] = [raw_hit]
     elif isinstance(raw_hit, list):
         hit_list = raw_hit
     else:
         hit_list = []
-    infos = []
-    keys = []
-    for hit in hit_list:
-        info = hit.get("info", {})
+    infos: List[Mapping[str, object]] = []
+    keys: List[str] = []
+    for raw_entry in hit_list:
+        hit: Mapping[str, object] = raw_entry if isinstance(raw_entry, Mapping) else {}
+        info: Mapping[str, object] = hit.get("info", {})  # type: ignore[assignment]
         key = info.get("key")
         if key:
             keys.append(str(key))
             infos.append(info)
-    return {"total": total, "sent": sent, "first": first, "keys": keys, "infos": infos}
+    return total, sent, first, keys, infos
 
 
 def parse_official_bib_page(venue: Venue, bib_text: str) -> List[BibEntry]:
+    """Parse a raw DBLP BibTeX page into a list of :class:`BibEntry` objects.
+
+    Args:
+        venue: The venue these entries belong to.
+        bib_text: Raw BibTeX source text (may contain multiple entries).
+
+    Returns:
+        List of parsed entries; malformed entries are silently skipped.
+    """
     entries = []
     for raw in split_bib_entries(bib_text):
         parsed = parse_bib_entry(raw)
@@ -631,6 +829,7 @@ def parse_official_bib_page(venue: Venue, bib_text: str) -> List[BibEntry]:
             continue
         entry_type, bib_key, fields = parsed
         dblp_key = bib_key[len("DBLP:") :] if bib_key.startswith("DBLP:") else bib_key
+        fields["journal"] = venue.journal
         entry = BibEntry(
             venue=venue,
             dblp_key=dblp_key,
@@ -646,6 +845,15 @@ def parse_official_bib_page(venue: Venue, bib_text: str) -> List[BibEntry]:
 def validate_page_keys(
     expected_keys: Sequence[str], entries: Sequence[BibEntry]
 ) -> None:
+    """Assert that the parsed entries match the expected DBLP keys exactly.
+
+    Args:
+        expected_keys: Keys returned by the JSON search page.
+        entries: Entries parsed from the corresponding BibTeX page.
+
+    Raises:
+        RuntimeError: If the key sets do not match.
+    """
     expected = set(expected_keys)
     actual = {e.dblp_key for e in entries}
     if expected != actual:
@@ -657,6 +865,15 @@ def validate_page_keys(
 
 
 def entry_from_json_info(venue: Venue, info: Mapping[str, object]) -> BibEntry:
+    """Synthesize a :class:`BibEntry` from a DBLP JSON info record.
+
+    Args:
+        venue: The venue this entry belongs to.
+        info: The ``info`` dict from a single DBLP search hit.
+
+    Returns:
+        A :class:`BibEntry` with BibTeX synthesized from JSON metadata.
+    """
     dblp_key = str(info["key"])
     fields: Dict[str, str] = {}
     authors = authors_from_json(info)
@@ -695,6 +912,14 @@ def entry_from_json_info(venue: Venue, info: Mapping[str, object]) -> BibEntry:
 
 
 def authors_from_json(info: Mapping[str, object]) -> List[str]:
+    """Extract the list of author name strings from a DBLP info record.
+
+    Args:
+        info: The ``info`` dict from a single DBLP search hit.
+
+    Returns:
+        Ordered list of author name strings; empty if none are present.
+    """
     authors_obj = info.get("authors")
     if not isinstance(authors_obj, Mapping):
         return []
@@ -706,6 +931,14 @@ def authors_from_json(info: Mapping[str, object]) -> List[str]:
 
 
 def author_text(obj: object) -> str:
+    """Extract and HTML-unescape an author name from a raw JSON author object.
+
+    Args:
+        obj: Either a plain string or a DBLP author dict with a ``"text"`` key.
+
+    Returns:
+        The author name string, or an empty string if it cannot be extracted.
+    """
     if isinstance(obj, str):
         return html.unescape(obj).strip()
     if isinstance(obj, Mapping):
@@ -716,6 +949,14 @@ def author_text(obj: object) -> str:
 
 
 def split_bib_entries(text: str) -> List[str]:
+    """Split a multi-entry BibTeX string into individual entry strings.
+
+    Args:
+        text: Raw BibTeX source that may contain zero or more entries.
+
+    Returns:
+        List of individual entry strings, each starting with ``@``.
+    """
     entries: List[str] = []
     n = len(text)
     i = 0
@@ -754,6 +995,15 @@ def split_bib_entries(text: str) -> List[str]:
 
 
 def parse_bib_entry(raw: str) -> Optional[Tuple[str, str, Dict[str, str]]]:
+    """Parse a single BibTeX entry string into its components.
+
+    Args:
+        raw: A single BibTeX entry string (e.g. ``@article{Key, ...}``).
+
+    Returns:
+        A ``(entry_type, key, fields)`` triple, or None if *raw* cannot be
+        parsed as a valid BibTeX entry.
+    """
     m = re.match(r"@([A-Za-z]+)\s*\{\s*([^,]+)\s*,", raw, flags=re.S)
     if not m:
         return None
@@ -793,6 +1043,19 @@ def parse_bib_entry(raw: str) -> Optional[Tuple[str, str, Dict[str, str]]]:
 
 
 def parse_bib_value(s: str, idx: int) -> Tuple[str, int]:
+    """Parse a single BibTeX field value starting at position *idx*.
+
+    Handles brace-delimited ``{...}``, quote-delimited ``"..."``, and bare
+    (unquoted) values.
+
+    Args:
+        s: The full BibTeX entry body string.
+        idx: Position in *s* where the value begins.
+
+    Returns:
+        A ``(value, new_idx)`` pair where *value* is the extracted text and
+        *new_idx* is the position immediately after the value.
+    """
     if idx >= len(s):
         return "", idx
     ch = s[idx]
@@ -836,6 +1099,14 @@ def parse_bib_value(s: str, idx: int) -> Tuple[str, int]:
 
 
 def derive_key_material(entry: BibEntry) -> None:
+    """Populate the key-derivation fields of *entry* in-place.
+
+    Sets ``authors``, ``year``, ``author_label``, and ``base_key`` from the
+    entry's ``fields`` dict.
+
+    Args:
+        entry: The :class:`BibEntry` to update.
+    """
     author_field = entry.fields.get("author", "")
     authors = split_authors(author_field)
     entry.authors = authors
@@ -846,6 +1117,14 @@ def derive_key_material(entry: BibEntry) -> None:
 
 
 def split_authors(author_field: str) -> List[str]:
+    """Split a BibTeX author field on `` and `` respecting brace depth.
+
+    Args:
+        author_field: Raw BibTeX author string.
+
+    Returns:
+        List of individual author name strings.
+    """
     if not author_field:
         return []
     parts: List[str] = []
@@ -869,6 +1148,17 @@ def split_authors(author_field: str) -> List[str]:
 
 
 def author_label(authors: Sequence[str]) -> str:
+    """Derive the CryptoBib-style author abbreviation for a list of authors.
+
+    Rules: one author → full last name; two/three → first three letters of each
+    last name; four or more → first letter of up to six last names.
+
+    Args:
+        authors: Ordered list of author name strings.
+
+    Returns:
+        The author label string (e.g. ``"FooBar"`` or ``"ABCD"``).
+    """
     surnames = [
         sanitize_name(last_name(a)) for a in authors if a and a.lower() != "others"
     ]
@@ -883,6 +1173,17 @@ def author_label(authors: Sequence[str]) -> str:
 
 
 def last_name(author: str) -> str:
+    """Extract the last name from a BibTeX author string.
+
+    Handles ``"Last, First"`` and ``"First Last"`` formats, and strips DBLP
+    disambiguation suffixes.
+
+    Args:
+        author: A single author name string.
+
+    Returns:
+        The last name, or ``"Anon"`` if extraction fails.
+    """
     clean = latexish_to_ascii(author)
     clean = re.sub(r"\s+\d{4}$", "", clean).strip()  # DBLP disambiguation suffix
     clean = clean.replace("~", " ")
@@ -898,6 +1199,17 @@ def last_name(author: str) -> str:
 
 
 def latexish_to_ascii(s: str) -> str:
+    """Convert a LaTeX-ish author string to a plain ASCII approximation.
+
+    Strips common LaTeX accent commands and special characters, then applies
+    Unicode NFKD normalization before encoding to ASCII.
+
+    Args:
+        s: Input string potentially containing LaTeX markup.
+
+    Returns:
+        ASCII approximation of the input.
+    """
     # Remove common LaTeX accent wrappers while preserving the base letters.
     s = html.unescape(s)
     replacements = {
@@ -925,23 +1237,56 @@ def latexish_to_ascii(s: str) -> str:
 
 
 def sanitize_name(s: str) -> str:
+    """Strip all non-alphanumeric characters from an ASCII name string.
+
+    Args:
+        s: Input name string.
+
+    Returns:
+        Alphanumeric-only string, or ``"Anon"`` if the result is empty.
+    """
     s = latexish_to_ascii(s)
     s = re.sub(r"[^A-Za-z0-9]+", "", s)
     return s or "Anon"
 
 
 def camel(s: str) -> str:
+    """Capitalise the first character of *s*, leaving the rest unchanged.
+
+    Args:
+        s: Input string.
+
+    Returns:
+        *s* with its first character uppercased, or an empty string if *s* is
+        empty.
+    """
     if not s:
         return ""
     return s[0].upper() + s[1:]
 
 
 def normalize_year(year: str) -> str:
+    """Extract a four-digit year from *year*, returning an empty string on failure.
+
+    Args:
+        year: Raw year string from a BibTeX field.
+
+    Returns:
+        Four-digit year string, or ``""`` if no four-digit sequence is found.
+    """
     m = re.search(r"(\d{4})", year or "")
     return m.group(1) if m else ""
 
 
 def read_keymap(path: Path) -> Dict[str, str]:
+    """Load the DBLP-key → custom-key mapping from a TSV file.
+
+    Args:
+        path: Path to the keymap TSV file.
+
+    Returns:
+        Mapping from DBLP key to assigned custom BibTeX key.
+    """
     if not path.exists():
         return {}
     result: Dict[str, str] = {}
@@ -958,6 +1303,15 @@ def read_keymap(path: Path) -> Dict[str, str]:
 
 
 def assign_custom_keys(entries: Sequence[BibEntry], old: Mapping[str, str]) -> None:
+    """Assign stable CryptoBib-style BibTeX keys to all entries in-place.
+
+    Existing keys from *old* are preserved whenever possible to avoid
+    invalidating citations in previously published papers.
+
+    Args:
+        entries: All entries across all venues; modified in-place.
+        old: Previously assigned DBLP-key → custom-key mapping.
+    """
     used: Dict[str, str] = {}
     unmapped: List[BibEntry] = []
 
@@ -994,6 +1348,16 @@ def assign_custom_keys(entries: Sequence[BibEntry], old: Mapping[str, str]) -> N
 
 
 def suffix(i: int) -> str:
+    """Convert a zero-based integer to a lowercase alphabetic collision suffix.
+
+    Examples: 0 → ``"a"``, 25 → ``"z"``, 26 → ``"aa"``.
+
+    Args:
+        i: Zero-based collision index.
+
+    Returns:
+        The corresponding suffix string.
+    """
     # 0 -> a, 25 -> z, 26 -> aa, etc.
     letters = []
     i += 1
@@ -1005,6 +1369,15 @@ def suffix(i: int) -> str:
 
 
 def first_free_key(base: str, used: Mapping[str, str]) -> str:
+    """Return the first key derived from *base* that is not already in *used*.
+
+    Args:
+        base: The base key (e.g. ``"JACM:Foo24"``).
+        used: Set of already-assigned keys (as a mapping's key set).
+
+    Returns:
+        *base* itself if available, otherwise *base* + the next free suffix.
+    """
     if base not in used:
         return base
     i = 0
@@ -1016,10 +1389,32 @@ def first_free_key(base: str, used: Mapping[str, str]) -> str:
 
 
 def rewrite_bib_key(raw: str, new_key: str) -> str:
+    """Replace the BibTeX key in *raw* with *new_key*.
+
+    Args:
+        raw: A single BibTeX entry string.
+        new_key: The replacement key.
+
+    Returns:
+        The entry string with the key substituted.
+    """
     return re.sub(r"^(@[A-Za-z]+\s*\{\s*)[^,]+", r"\1" + new_key, raw.strip(), count=1)
 
 
 def format_bib_entry(entry_type: str, key: str, fields: Mapping[str, str]) -> str:
+    """Render a BibTeX entry as a formatted string.
+
+    Fields are emitted in ``FIELD_ORDER`` order; any remaining fields follow
+    in sorted order.
+
+    Args:
+        entry_type: BibTeX entry type (e.g. ``"article"``).
+        key: BibTeX citation key.
+        fields: Mapping of field names to values.
+
+    Returns:
+        Formatted BibTeX entry string.
+    """
     lines = [f"@{entry_type}{{{key},"]
     written = set()
     for name in FIELD_ORDER:
@@ -1044,6 +1439,19 @@ def write_outputs(
     keymap_path: Path,
     generator_args: argparse.Namespace,
 ) -> None:
+    """Atomically write all output .bib files, the keymap, and the manifest.
+
+    Files are first written to a temporary directory and then moved into place
+    to minimise the window where partially-written files are visible.
+
+    Args:
+        entries: All entries across all venues.
+        venues: Ordered list of venues.
+        bib_dir: Destination directory for .bib files.
+        meta_dir: Destination directory for keymap and manifest.
+        keymap_path: Final path of the keymap TSV file.
+        generator_args: Parsed command-line arguments (used for the manifest).
+    """
     now = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
     tmp = Path(tempfile.mkdtemp(prefix="theorybib-", dir=str(bib_dir.parent)))
     try:
@@ -1091,6 +1499,16 @@ def write_outputs(
 
 
 def bib_file_text(venue: Optional[Venue], entries: Sequence[BibEntry], now: str) -> str:
+    """Render the full contents of a .bib output file.
+
+    Args:
+        venue: The venue for this file, or None for the combined all.bib.
+        entries: Entries to include, already sorted by custom key.
+        now: ISO-8601 timestamp string embedded in the file header.
+
+    Returns:
+        Complete .bib file contents as a string.
+    """
     if venue is None:
         title = "combined theory bibliography"
         label = "ALL"
@@ -1117,6 +1535,12 @@ def bib_file_text(venue: Optional[Venue], entries: Sequence[BibEntry], now: str)
 
 
 def write_keymap(path: Path, entries: Sequence[BibEntry]) -> None:
+    """Write the DBLP-key → custom-key mapping to a TSV file.
+
+    Args:
+        path: Destination file path.
+        entries: All entries to include in the keymap.
+    """
     lines = [
         "dblp_key\tcustom_key\tvenue\tyear\tauthor_label\tbase_key\toriginal_bib_key"
     ]
@@ -1144,6 +1568,15 @@ def write_manifest(
     args: argparse.Namespace,
     now: str,
 ) -> None:
+    """Write a JSON manifest summarising the generation run.
+
+    Args:
+        path: Destination file path.
+        venues: All venues that were processed.
+        entries: All generated entries.
+        args: Parsed command-line arguments.
+        now: ISO-8601 generation timestamp.
+    """
     counts = {v.id: 0 for v in venues}
     for e in entries:
         counts[e.venue.id] = counts.get(e.venue.id, 0) + 1
@@ -1160,6 +1593,12 @@ def write_manifest(
 
 
 def git_commit_and_maybe_push(root: Path, push: bool) -> None:
+    """Commit changed bib and meta files and optionally push.
+
+    Args:
+        root: Repository root directory.
+        push: When True, push after committing.
+    """
     status = subprocess.run(
         ["git", "status", "--porcelain", "bib", "meta"],
         cwd=root,
@@ -1186,6 +1625,15 @@ def git_commit_and_maybe_push(root: Path, push: bool) -> None:
 
 
 def one_line(s: str, limit: int) -> str:
+    """Collapse whitespace in *s* and truncate to *limit* characters.
+
+    Args:
+        s: Input string.
+        limit: Maximum length of the returned string.
+
+    Returns:
+        Whitespace-collapsed string, truncated with ``"..."`` if over *limit*.
+    """
     s = " ".join(s.split())
     return s if len(s) <= limit else s[:limit] + "..."
 
