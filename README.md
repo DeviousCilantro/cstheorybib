@@ -1,6 +1,14 @@
+---
+title: README
+aliases: README
+linter-yaml-title-alias: README
+date created: Sunday, May 10th 2026, 2:37:09 pm
+date modified: Tuesday, May 19th 2026, 11:10:41 pm
+---
+
 <!-- @format -->
 
-# Bibliography for Theoretical Computer Science and related areas
+## Bibliography for Theoretical Computer Science and related areas
 
 This repository contains BibTeX files for selected theory venues, generated from DBLP.
 
@@ -10,9 +18,9 @@ This repository uses a hybrid layout:
 - `rust/theorybib-dblp/` is the Rust engine. It does the DBLP JSON pagination, key generation, cache handling, and output writing.
 - `gen_python.py` is a pure-Python fallback. The wrapper runs it in JSON-only mode if Rust/Cargo is unavailable.
 
-The Rust engine is the default because it avoids the fragile paginated bulk-BibTeX export path. Large streams such as TCS can make DBLP's BibTeX export endpoint disagree with the JSON page, whereas the DBLP publication search API explicitly supports JSON pagination via `h` and `f`.
+The Rust engine is the default because it avoids the fragile paginated bulk-BibTeX export path. Large streams such as TCS can make DBLP’s BibTeX export endpoint disagree with the JSON page, whereas the DBLP publication search API explicitly supports JSON pagination via `h` and `f`.
 
-## Generated files
+### Generated files
 
 ```text
 bib/all.bib
@@ -37,9 +45,9 @@ The default venue set is:
 | `bib/jsl.bib`           |  `JSL` | `journals/jsyml`         | Journal of Symbolic Logic                         |
 | `bib/tcs.bib`           |  `TCS` | `journals/tcs`           | Theoretical Computer Science                      |
 
-`ECC` is currently mapped to DBLP's ECCC stream. Edit `venues.json` if you mean another stream.
+`ECC` is currently mapped to DBLP’s ECCC stream. Edit `venues.json` if you mean another stream.
 
-## Key convention
+### Key convention
 
 Keys follow the CryptoBib convention:
 
@@ -50,13 +58,13 @@ venue-label ':' author-label two-digit-year [collision-letter]
 Author labels are generated as follows.
 
 - One author: full last name. Example: `JSL:Shamir79`.
-- Two or three authors: first three letters of each author's last name. Example: `JSL:AliBob98` or `TCS:AbdMinNam05`.
-- Four or more authors: first letter of each author's last name, up to six authors. Example: `JSL:ABCDEG98`.
-- Collisions: append `a`, `b`, `c`, ... as necessary.
+- Two or three authors: first three letters of each author’s last name. Example: `JSL:AliBob98` or `TCS:AbdMinNam05`.
+- Four or more authors: first letter of each author’s last name, up to six authors. Example: `JSL:ABCDEG98`.
+- Collisions: append `a`, `b`, `c`, … as necessary.
 
 `meta/keymap.tsv` preserves existing citation keys across future updates. This is essential for unattended runs: when DBLP adds a newly colliding record, old citations are not renamed.
 
-## Requirements
+### Requirements
 
 For the default fast path:
 
@@ -73,7 +81,7 @@ Python 3.9+
 
 The first Rust run will compile the engine. Subsequent runs reuse `target/release/theorybib-dblp`.
 
-## Generate
+### Generate
 
 From the repository root:
 
@@ -111,7 +119,7 @@ python3 gen.py \
   --max-retries 12
 ```
 
-## The TCS bulk-BibTeX mismatch
+### The TCS bulk-BibTeX mismatch
 
 If the old Python bulk-BibTeX path fails with a message like this:
 
@@ -139,7 +147,7 @@ rm -rf .cache/dblp/bib/tcs
 
 The new wrapper does not use the failing bulk-BibTeX path by default.
 
-## Cache policy
+### Cache policy
 
 ```bash
 # Fetch fresh DBLP pages and overwrite cache.
@@ -154,7 +162,7 @@ python3 gen.py --cache-policy offline
 
 The cache lives under `.cache/dblp/` and is not intended to be committed.
 
-## Cron
+### Cron
 
 Edit `scripts/update-and-push.sh` and set:
 
@@ -171,6 +179,6 @@ Then install a cron entry similar to `cron.d/theorybib`:
 
 That runs at 03:17 on the first day of every fourth month. The update script uses `flock`, regenerates the bibliography, commits only if `bib/` or `meta/` changed, and pushes.
 
-## Notes
+### Notes
 
-The Rust engine generates UTF-8 BibTeX from DBLP JSON metadata. This is usually preferable for unattended updates because it is compact, paginated, and validated by DBLP's JSON result counts. If exact DBLP BibTeX formatting is required for a particular venue, use `gen_python.py --individual-fallback --only VENUE`, but that mode performs one request per record and is not appropriate for large streams such as TCS.
+The Rust engine generates UTF-8 BibTeX from DBLP JSON metadata. This is usually preferable for unattended updates because it is compact, paginated, and validated by DBLP’s JSON result counts. If exact DBLP BibTeX formatting is required for a particular venue, use `gen_python.py --individual-fallback --only VENUE`, but that mode performs one request per record and is not appropriate for large streams such as TCS.
